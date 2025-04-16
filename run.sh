@@ -1,1 +1,1 @@
-python /parser/parsing.py $1
+python3 parser/parsing.py $1

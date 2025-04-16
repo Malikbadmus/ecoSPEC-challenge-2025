@@ -1,0 +1,1 @@
+python /parser/parsing.py $1

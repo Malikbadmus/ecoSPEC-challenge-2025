@@ -7,8 +7,8 @@ from fpdf import FPDF
 import torch
 import os
 
-def load_mistral_pipeline():
-    model_id = "mistralai/Mistral-7B-Instruct-v0.1"
+def load_model_pipeline():
+    model_id = "tiiuae/falcon-rw-1b"
     print("Device set to use CPU")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(
@@ -26,7 +26,7 @@ def load_mistral_pipeline():
     )
     return pipe
 
-def mistral_model_call(pipe, prompt: str) -> List[str]:
+def model_call(pipe, prompt: str) -> List[str]:
     output = pipe(prompt, max_new_tokens=150, do_sample=True, temperature=0.7)[0]["generated_text"]
     cleaned = output.replace(prompt, "").strip()
     values = [v.strip() for v in cleaned.split(",") if v.strip()]
@@ -34,10 +34,10 @@ def mistral_model_call(pipe, prompt: str) -> List[str]:
 
 def generate_table_structure(pipe, topic: str) -> Tuple[List[str], List[str]]:
     prompt_cols = f"Generate 3-5 column headers for a table on the topic: {topic}."
-    cols = mistral_model_call(pipe, prompt_cols)
+    cols = model_call(pipe, prompt_cols)
 
     prompt_rows = f"Generate 3-5 rows or items that should appear in a table on: {topic}."
-    rows = mistral_model_call(pipe, prompt_rows)
+    rows = model_call(pipe, prompt_rows)
 
     return cols, rows
 
@@ -118,10 +118,10 @@ def main():
     args = parser.parse_args()
 
     print("Loading model...")
-    mistral_pipe = load_mistral_pipeline()
+    model_pipe = load_model_pipeline()
 
     if args.topic:
-        columns, rows = generate_table_structure(mistral_pipe, args.topic)
+        columns, rows = generate_table_structure(model_pipe, args.topic)
         prompt = f"Using the topic '{args.topic}', fill in the table rows."
     else:
         prompt = args.prompt or "Fill in the table based on the given prompt and headers."
@@ -133,7 +133,7 @@ def main():
         prompt=prompt,
         columns=columns,
         rows=rows,
-        model_call_fn=lambda p: mistral_model_call(mistral_pipe, p)
+        model_call_fn=lambda p: model_call(model_pipe, p)
     )
 
     if args.output == "pdf":

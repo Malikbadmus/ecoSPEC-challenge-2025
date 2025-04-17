@@ -7,8 +7,8 @@ from fpdf import FPDF
 import torch
 import os
 
-def load_zephyr_pipeline():
-    model_id = "HuggingFaceH4/zephyr-7b-beta"
+def load_tinyllama_pipeline():
+    model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
@@ -18,7 +18,7 @@ def load_zephyr_pipeline():
     pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
     return pipe
 
-def zephyr_model_call(pipe, prompt: str) -> List[str]:
+def tinyllama_model_call(pipe, prompt: str) -> List[str]:
     output = pipe(prompt, max_new_tokens=100, do_sample=True, temperature=0.7)[0]["generated_text"]
     cleaned = output.replace(prompt, "").strip()
     values = [v.strip() for v in cleaned.split(",") if v.strip()]
@@ -26,10 +26,10 @@ def zephyr_model_call(pipe, prompt: str) -> List[str]:
 
 def generate_table_structure(pipe, topic: str) -> Tuple[List[str], List[str]]:
     prompt_cols = f"Generate 3-5 column headers for a table on the topic: {topic}."
-    cols = zephyr_model_call(pipe, prompt_cols)
+    cols = tinyllama_model_call(pipe, prompt_cols)
 
     prompt_rows = f"Generate 3-5 rows or items that should appear in a table on: {topic}."
-    rows = zephyr_model_call(pipe, prompt_rows)
+    rows = tinyllama_model_call(pipe, prompt_rows)
 
     return cols, rows
 
@@ -107,10 +107,10 @@ def main():
     args = parser.parse_args()
 
     print("Loading model...")
-    zephyr_pipe = load_zephyr_pipeline()
+    tinyllama_pipe = load_tinyllama_pipeline()
 
     if args.topic:
-        columns, rows = generate_table_structure(zephyr_pipe, args.topic)
+        columns, rows = generate_table_structure(tinyllama_pipe, args.topic)
         prompt = f"Using the topic '{args.topic}', fill in the table rows."
     else:
         prompt = args.prompt or "Fill in the table based on the given prompt and headers."
@@ -122,7 +122,7 @@ def main():
         prompt=prompt,
         columns=columns,
         rows=rows,
-        model_call_fn=lambda p: zephyr_model_call(zephyr_pipe, p)
+        model_call_fn=lambda p: tinyllama_model_call(tinyllama_pipe, p)
     )
 
     if args.output == "pdf":

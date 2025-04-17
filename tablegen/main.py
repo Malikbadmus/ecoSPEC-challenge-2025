@@ -7,29 +7,35 @@ from fpdf import FPDF
 import torch
 import os
 
-def load_tinyllama_pipeline():
-    model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+def load_mistral_pipeline():
+    model_id = "mistralai/Mistral-7B-Instruct-v0.2"
+    print("Device set to use CPU")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        device_map="auto",
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+        torch_dtype=torch.float32,
+        low_cpu_mem_usage=True
     )
-    pipe = pipeline("text-generation", model=model, tokenizer=tokenizer)
+    pipe = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device=-1  # Forces CPU usage
+    )
     return pipe
 
-def tinyllama_model_call(pipe, prompt: str) -> List[str]:
-    output = pipe(prompt, max_new_tokens=100, do_sample=True, temperature=0.7)[0]["generated_text"]
+def mistral_model_call(pipe, prompt: str) -> List[str]:
+    output = pipe(prompt, max_new_tokens=150, do_sample=True, temperature=0.7)[0]["generated_text"]
     cleaned = output.replace(prompt, "").strip()
     values = [v.strip() for v in cleaned.split(",") if v.strip()]
     return values
 
 def generate_table_structure(pipe, topic: str) -> Tuple[List[str], List[str]]:
     prompt_cols = f"Generate 3-5 column headers for a table on the topic: {topic}."
-    cols = tinyllama_model_call(pipe, prompt_cols)
+    cols = mistral_model_call(pipe, prompt_cols)
 
     prompt_rows = f"Generate 3-5 rows or items that should appear in a table on: {topic}."
-    rows = tinyllama_model_call(pipe, prompt_rows)
+    rows = mistral_model_call(pipe, prompt_rows)
 
     return cols, rows
 
@@ -81,14 +87,17 @@ def export_table_to_pdf(columns: List[str], rows: List[List[str]], intro: str, f
     pdf.add_page()
     pdf.set_font("Arial", size=12)
     pdf.multi_cell(0, 10, intro)
-    line_height = pdf.font_size * 2.5
-    col_width = pdf.epw / len(columns)
 
-    pdf.set_font(style="B")
+    line_height = pdf.font_size * 2.5
+    effective_page_width = pdf.w - 2 * pdf.l_margin
+    col_width = effective_page_width / len(columns)
+
+    pdf.set_font("Arial", size=12, style="B")
     for col in columns:
         pdf.cell(col_width, line_height, col, border=1)
     pdf.ln(line_height)
-    pdf.set_font(style="")
+
+    pdf.set_font("Arial", size=12)
     for row in rows:
         for val in row:
             pdf.cell(col_width, line_height, val, border=1)
@@ -107,10 +116,10 @@ def main():
     args = parser.parse_args()
 
     print("Loading model...")
-    tinyllama_pipe = load_tinyllama_pipeline()
+    mistral_pipe = load_mistral_pipeline()
 
     if args.topic:
-        columns, rows = generate_table_structure(tinyllama_pipe, args.topic)
+        columns, rows = generate_table_structure(mistral_pipe, args.topic)
         prompt = f"Using the topic '{args.topic}', fill in the table rows."
     else:
         prompt = args.prompt or "Fill in the table based on the given prompt and headers."
@@ -122,7 +131,7 @@ def main():
         prompt=prompt,
         columns=columns,
         rows=rows,
-        model_call_fn=lambda p: tinyllama_model_call(tinyllama_pipe, p)
+        model_call_fn=lambda p: mistral_model_call(mistral_pipe, p)
     )
 
     if args.output == "pdf":

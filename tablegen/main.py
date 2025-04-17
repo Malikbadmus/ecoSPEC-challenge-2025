@@ -1,148 +1,152 @@
-import argparse
-from typing import List, Callable, Tuple
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
-from prettytable import PrettyTable
-from docx import Document
-from fpdf import FPDF
-import torch
 import os
+import json
+import re
+import argparse
+from typing import List, Optional
 
-def load_model_pipeline():
-    model_id = "tiiuae/falcon-rw-1b"
-    print("Device set to use CPU")
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        device_map="auto",
-        offload_folder="offload",
-        torch_dtype=torch.float32,
-        low_cpu_mem_usage=True
-    )
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        device=-1  # Forces CPU usage
-    )
-    return pipe
+import torch
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+from docx import Document
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 
-def model_call(pipe, prompt: str) -> List[str]:
-    output = pipe(prompt, max_new_tokens=150, do_sample=True, temperature=0.7)[0]["generated_text"]
-    cleaned = output.replace(prompt, "").strip()
-    values = [v.strip() for v in cleaned.split(",") if v.strip()]
-    return values
 
-def generate_table_structure(pipe, topic: str) -> Tuple[List[str], List[str]]:
-    prompt_cols = f"Generate 3-5 column headers for a table on the topic: {topic}."
-    cols = model_call(pipe, prompt_cols)
 
-    prompt_rows = f"Generate 3-5 rows or items that should appear in a table on: {topic}."
-    rows = model_call(pipe, prompt_rows)
+try:
+    from docx2pdf import convert
+    DOCX2PDF_AVAILABLE = True
+except ImportError:
+    DOCX2PDF_AVAILABLE = False
 
-    return cols, rows
 
-def fill_table_rows(
-    prompt: str,
-    columns: List[str],
-    rows: List[str],
-    model_call_fn: Callable[[str], List[str]]
-) -> List[List[str]]:
-    full_table = []
-    for row_label in rows:
-        full_prompt = (
-            f"{prompt}\n"
-            f"Component: {row_label}\n"
-            f"Columns: {', '.join(columns[1:])}\n"
-            f"Provide your response as comma-separated values."
+class TableFiller:
+    def __init__(self, model_name: str = "HuggingFaceH4/zephyr-7b-beta"):
+        print(f"Loading model: {model_name}")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map="auto",
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
         )
-        model_response = model_call_fn(full_prompt)
-        full_row = [row_label] + model_response
-        full_table.append(full_row)
-    return full_table
+        self.generator = pipeline(
+            "text-generation",
+            model=self.model,
+            tokenizer=self.tokenizer,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+        )
+        self.system_prompt = (
+            "You are a helpful assistant that generates table data. "
+            "Return only a JSON array of arrays — no explanations, no formatting. "
+            "Example: [[\"Fast\", \"Easy\"], [\"Slow\", \"Moderate\"]]"
+        )
 
-def print_table(columns: List[str], rows: List[List[str]]):
-    table = PrettyTable()
-    table.field_names = columns
-    for row in rows:
-        if len(row) == len(columns):
-            table.add_row(row)
-        else:
-            table.add_row(row + [""] * (len(columns) - len(row)))
-    print(table)
+    def format_prompt(self, user_prompt: str, row_headers: Optional[List[str]] = None,
+                      column_headers: Optional[List[str]] = None, num_rows: int = 5, num_cols: int = 3) -> str:
+        prompt = f"Generate table content for: {user_prompt}\n"
+        if row_headers:
+            prompt += f"Row headers: {', '.join(row_headers)}\n"
+        if column_headers:
+            prompt += f"Column headers: {', '.join(column_headers)}\n"
+        if not row_headers and not column_headers:
+            prompt += f"Generate a {num_rows}x{num_cols} table with appropriate values.\n"
+        prompt += "\nReturn ONLY a JSON array of arrays."
+        return prompt
 
-def export_table_to_docx(columns: List[str], rows: List[List[str]], intro: str, filename="output.docx"):
-    doc = Document()
-    doc.add_paragraph(intro)
-    table = doc.add_table(rows=1 + len(rows), cols=len(columns))
-    hdr_cells = table.rows[0].cells
-    for i, col in enumerate(columns):
-        hdr_cells[i].text = col
-    for row in rows:
-        cells = table.add_row().cells
-        for i, cell_val in enumerate(row):
-            cells[i].text = cell_val
-    doc.save(filename)
-    print(f"DOCX saved to {filename}")
+    def extract_json_array(self, text: str) -> List[List[str]]:
+        try:
+            text = re.sub(r"```(?:json)?|```", "", text)
+            start = text.find("[")
+            end = text.rfind("]")
+            if start == -1 or end == -1:
+                return [[]]
+            json_text = text[start:end + 1]
+            data = json.loads(json_text)
 
-def export_table_to_pdf(columns: List[str], rows: List[List[str]], intro: str, filename="output.pdf"):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.multi_cell(0, 10, intro)
+            if isinstance(data, list) and all(isinstance(row, dict) for row in data):
+                return [[str(cell) for cell in row.values()] for row in data]
 
-    line_height = pdf.font_size * 2.5
-    effective_page_width = pdf.w - 2 * pdf.l_margin
-    col_width = effective_page_width / len(columns)
+            if isinstance(data[0], list) and isinstance(data[0][0], list):
+                flat = []
+                for chunk in data:
+                    flat.extend(chunk)
+                return flat
 
-    pdf.set_font("Arial", size=12, style="B")
-    for col in columns:
-        pdf.cell(col_width, line_height, col, border=1)
-    pdf.ln(line_height)
+            return data
+        except Exception as e:
+            print("JSON parsing failed:", e)
+            return [["N/A"] * 3 for _ in range(3)]
 
-    pdf.set_font("Arial", size=12)
-    for row in rows:
-        for val in row:
-            pdf.cell(col_width, line_height, val, border=1)
-        pdf.ln(line_height)
-    pdf.output(filename)
-    print(f"PDF saved to {filename}")
+    def generate_table(self, prompt: str, row_headers: Optional[List[str]] = None,
+                       column_headers: Optional[List[str]] = None,
+                       num_rows: int = 5, num_cols: int = 3) -> List[List[str]]:
+        full_prompt = self.format_prompt(prompt, row_headers, column_headers, num_rows, num_cols)
+        input_text = f"<s>[INST] {self.system_prompt}\n{full_prompt} [/INST]"
+        result = self.generator(input_text, max_new_tokens=1024, do_sample=True, temperature=0.7)[0]['generated_text']
+        print("Raw LLM Output:\n", result)
+        return self.extract_json_array(result)
 
-def main():
+    def save_to_docx(self, table_data: List[List[str]], file_path: str,
+                     intro_text: Optional[str] = None, title: Optional[str] = None):
+        doc = Document()
+        if title:
+            heading = doc.add_heading(title, level=1)
+            heading.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+        if intro_text:
+            doc.add_paragraph(intro_text)
+        rows = len(table_data)
+        cols = len(table_data[0]) if rows > 0 else 0
+        table = doc.add_table(rows=rows, cols=cols)
+        table.style = 'Table Grid'
+        for i, row in enumerate(table_data):
+            for j, cell in enumerate(row):
+                table.cell(i, j).text = str(cell)
+        doc.save(file_path)
+        print(f"Saved table to {file_path}")
+
+        
+        if file_path.endswith(".pdf"):
+            docx_path = file_path.replace(".pdf", ".docx")
+            self.save_to_docx(table_data, docx_path, intro_text, title)
+            if DOCX2PDF_AVAILABLE:
+                convert(docx_path, file_path)
+                print(f"Converted to PDF: {file_path}")
+            else:
+                print("Cannot convert to PDF: docx2pdf not installed.")
+
+
+def cli_main():
     parser = argparse.ArgumentParser(description="GenAI Table Filler")
-    parser.add_argument("--prompt", type=str, help="Prompt to guide model table filling", required=False)
-    parser.add_argument("--topic", type=str, help="Topic to generate full table from scratch", required=False)
-    parser.add_argument("--columns", type=str, nargs="+", help="Column headers (optional)")
-    parser.add_argument("--rows", type=str, nargs="+", help="Row names (optional)")
-    parser.add_argument("--output", type=str, choices=["console", "pdf", "docx"], default="console")
-    parser.add_argument("--intro", type=str, default="This document contains an AI-generated table based on your input.")
+    parser.add_argument("--prompt", type=str, help="Prompt for table content", required=False)
+    parser.add_argument("--topic", type=str, help="High-level topic for automatic table generation", required=False)
+    parser.add_argument("--columns", type=str, nargs="+", help="Column headers", required=False)
+    parser.add_argument("--rows", type=str, nargs="+", help="Row headers", required=False)
+    parser.add_argument("--output", type=str, choices=["console", "docx", "pdf"], default="console")
+    parser.add_argument("--intro", type=str, default="AI-generated table based on your prompt.")
+    parser.add_argument("--file", type=str, default="output.docx", help="Output file name (for docx/pdf)")
     args = parser.parse_args()
 
-    print("Loading model...")
-    model_pipe = load_model_pipeline()
+    filler = TableFiller()
+    prompt = args.prompt or f"Generate a table about: {args.topic}" if args.topic else "Fill in the table."
+    row_headers = args.rows
+    col_headers = args.columns
+    table = filler.generate_table(prompt, row_headers=row_headers, column_headers=col_headers)
 
-    if args.topic:
-        columns, rows = generate_table_structure(model_pipe, args.topic)
-        prompt = f"Using the topic '{args.topic}', fill in the table rows."
-    else:
-        prompt = args.prompt or "Fill in the table based on the given prompt and headers."
-        columns = args.columns or ["Aspect", "Detail", "Reasoning"]
-        rows = args.rows or ["Item 1", "Item 2", "Item 3"]
-
-    print("Generating table content...")
-    full_table = fill_table_rows(
-        prompt=prompt,
-        columns=columns,
-        rows=rows,
-        model_call_fn=lambda p: model_call(model_pipe, p)
-    )
-
-    if args.output == "pdf":
-        export_table_to_pdf(columns, full_table, args.intro)
-    elif args.output == "docx":
-        export_table_to_docx(columns, full_table, args.intro)
-    else:
+    if args.output == "console":
         print("\nGenerated Table:\n")
-        print_table(columns, full_table)
+        if col_headers:
+            print(" | ".join([""] + col_headers))
+        for i, row in enumerate(table):
+            label = row_headers[i] if row_headers and i < len(row_headers) else f"Row {i+1}"
+            print(f"{label} | " + " | ".join(row))
+    else:
+        file_ext = ".pdf" if args.output == "pdf" else ".docx"
+        filename = args.file if args.file.endswith(file_ext) else args.file.replace(".docx", file_ext)
+        table_with_headers = [[""] + col_headers] if col_headers else []
+        if row_headers:
+            table_with_headers += [[row_headers[i]] + row for i, row in enumerate(table)]
+        else:
+            table_with_headers += table
+        filler.save_to_docx(table_with_headers, filename, intro_text=args.intro, title="Generated Table")
+
 
 if __name__ == "__main__":
-    main()
+    cli_main()

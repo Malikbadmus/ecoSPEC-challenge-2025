@@ -8,11 +8,13 @@ import torch
 import os
 
 def load_mistral_pipeline():
-    model_id = "mistralai/Mistral-7B-Instruct-v0.2"
+    model_id = "mistralai/Mistral-7B-Instruct-v0.1"
     print("Device set to use CPU")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
+        device_map="auto",
+        offload_folder="offload",
         torch_dtype=torch.float32,
         low_cpu_mem_usage=True
     )

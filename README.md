@@ -8,6 +8,10 @@ This tool extracts **all tables** from `.docx` and `.pdf` files and represents t
 
 - python-docx
 - pdfplumber
+- transformers
+- fpdf
+- prettytable
+- accelerate
 
 ```bash
 pip install -r requirements.txt

@@ -33,11 +33,16 @@ class TableFiller:
             tokenizer=self.tokenizer,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
         )
-        self.system_prompt = (
-            "You are a helpful assistant that generates table data. "
-            "Return only a JSON array of arrays — no explanations, no formatting. "
-            "Example: [[\"Fast\", \"Easy\"], [\"Slow\", \"Moderate\"]]"
-        )
+        self.system_prompt = """
+                            You are a helpful assistant that generates tables based on the provided prompt.
+                            You will receive a topic, row headers, and column headers.
+                            Your task is to fill in a table with realistic and plausible data.
+
+                            Return ONLY a valid JSON array of arrays like: [[value1, value2, ...], [value1, value2, ...], ...]
+                            Each inner array represents one row of the table, corresponding to the row headers in order.
+
+                            Do NOT include any explanation, formatting, or code blocks — just return the raw JSON array.
+                            """
 
     def format_prompt(self, user_prompt: str, row_headers: Optional[List[str]] = None,
                       column_headers: Optional[List[str]] = None, num_rows: int = 5, num_cols: int = 3) -> str:
